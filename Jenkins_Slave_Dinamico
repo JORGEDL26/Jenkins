@@ -1,0 +1,180 @@
+# The MIT License
+#
+#  Copyright (c) 2017, Markus Helm
+#
+#  Permission is hereby granted, free of charge, to any person obtaining a copy
+#  of this software and associated documentation files (the "Software"), to deal
+#  in the Software without restriction, including without limitation the rights
+#  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+#  copies of the Software, and to permit persons to whom the Software is
+#  furnished to do so, subject to the following conditions:
+#
+#  The above copyright notice and this permission notice shall be included in
+#  all copies or substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+#  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+#  THE SOFTWARE.
+
+FROM centos:7.3.1611
+
+RUN yum -y install \
+		#wget \
+		sudo \
+        git
+#COPY jdk-8u201-linux-x64.rpm .
+#RUN yum -y install \
+#		jdk-*-linux-x64.rpm \
+#    && \
+#	rm -rf jdk-*-linux-x64.rpm \
+#	&& \
+#	yum -y remove \
+#		wget \
+#	&& \
+#	yum clean all \
+#	&& \
+#	yum-config-manager --disable *
+
+# Define location of the Oracle JDK
+#ENV JAVA_HOME /usr/bin/java
+# Define location of the Oracle JRE
+#ENV JRE_HOME /usr/java/default/jre
+
+# Download the Jenkins Slave JAR
+RUN curl --create-dirs -sSLo /usr/share/jenkins/slave.jar https://repo.jenkins-ci.org/public/org/jenkins-ci/main/remoting/3.9/remoting-3.9.jar \
+	&& chmod 755 /usr/share/jenkins \
+	&& chmod 644 /usr/share/jenkins/slave.jar
+
+# Download the Jenkins Slave StartUp Script
+RUN curl --create-dirs -sSLo /usr/local/bin/jenkins-slave https://raw.githubusercontent.com/jenkinsci/docker-jnlp-slave/3.27-1/jenkins-slave \
+	&& chmod a+x /usr/local/bin/jenkins-slave
+
+# Add a dedicated jenkins system user
+RUN useradd --system --shell /bin/bash --create-home --home /home/jenkins jenkins
+
+#
+# This is actually a very dirty hack because it grants sudo privilieges to user `jenkins` without password!
+#
+# Unfortunately the CentOS installation needs some further adaptions to project specific needs which
+# cannot (or shoudn't) be done on the public internet (e.g. modify /etc/hosts, add certificates to java keystore, ...).
+#
+# If there's a better way to customize the installation during runtime with root access, you're welcome to improve
+# this Dockerfile or to describe the approach.
+#
+RUN echo "jenkins ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/jenkins
+
+# Switch to user `jenkins`
+USER jenkins
+
+# Prepare the workspace for user `jenkins`
+RUN mkdir -p /home/jenkins/.jenkins
+VOLUME /home/jenkins/.jenkins
+WORKDIR /home/jenkins
+
+
+###################################### Dependencias para rodar os pipes da Ciclic ####################################
+
+###### User access ######
+USER root
+
+###### used by docker ######
+VOLUME [ "/sys/fs/cgroup" ]
+
+###### Update image ######
+RUN yum update -y
+######## Add user ######
+RUN echo 'jenkins ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+###### Install AWS CLI ######
+RUN yum install unzip -y
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+RUN unzip awscliv2.zip
+RUN sudo ./aws/install -i /usr/local/aws-cli -b /usr/local/bin
+###### Install Packages ######
+RUN yum install -y \
+    #maven \
+	java-11-openjdk-devel \
+    epel-release \
+	wget
+##### Install Maven ######
+RUN sudo wget --no-check-certificate https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz
+RUN sudo tar xf apache-maven-3.8.6-bin.tar.gz -C /opt
+RUN echo "PATH=/opt/apache-maven-3.8.6/bin" >> /etc/environment
+RUN export PATH="$PATH:/opt/apache-maven-3.8.6/bin"
+WORKDIR /usr/bin
+RUN sudo ln -s /opt/apache-maven-3.8.6/bin mvn
+ENV M2_HOME=/opt/apache-maven-3.8.6
+ENV MAVEN_HOME=/opt/apache-maven-3.8.6
+ENV PATH=${M2_HOME}/bin:${PATH}
+
+RUN yum -y update
+###### Copiar Java 1 e 11 no alternatives ######
+ADD java1.tar.gz /usr/lib/jvm
+ADD java11.tar.gz /usr/lib/jvm
+###### Alias ######
+WORKDIR /usr/lib/jvm
+RUN ln -s java-11-openjdk-11.0.8.10-0.el7_8.x86_64 java-11-openjdk-11.0.4.11-0.el7_6.x86_64
+RUN ln -s java-1.8.0-openjdk-1.8.0.262.b10-0.el7_8.x86_64 java-1.8.0-openjdk-1.8.0.212.b04-0.el7_6.x86_64
+###### Setando como alternativas ######
+RUN alternatives --install /usr/bin/java java /usr/lib/jvm/java-11-openjdk-11.0.4.11-0.el7_6.x86_64/bin/java 2
+RUN alternatives --install /usr/bin/java java /usr/lib/jvm/java-1.8.0-openjdk-1.8.0.212.b04-0.el7_6.x86_64/jre/bin/java 3
+RUN sudo alternatives --set javac /usr/lib/jvm/java-11-openjdk-11.0.16.0.8-1.el7_9.x86_64/bin/javac
+###### Configurando o SonarQube ######
+RUN mvn -v
+RUN yum install which -y
+RUN yum install wget -y
+WORKDIR /
+RUN wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.7.0.2747.zip
+RUN sudo unzip sonar-scanner-cli-4.7.0.2747.zip
+RUN sudo mv sonar-scanner-4.7.0.2747 /opt/sonar
+RUN rm -rf /opt/sonar/conf/sonar-scanner.properties
+COPY sonar-scanner.properties /opt/sonar/conf
+RUN echo "PATH=/opt/sonar/bin" >> /etc/environment
+RUN export PATH="$PATH:/opt/sonar/bin"
+WORKDIR /usr/bin
+RUN sudo ln -s /opt/sonar/bin/sonar-scanner sonar-scanner
+
+###### Instalar o Docker (Suporte AWS) ######
+RUN sudo yum install -y net-tools
+RUN sudo yum install -y iproute
+USER jenkins
+# >>>>> Os passos a seguir ja estão realizados e salvos no /var/jenkins_home (EFS) <<<<<
+RUN curl -fsSL https://get.docker.com/rootless -o /tmp/install-docker-rootless.sh; \
+   chmod +x /tmp/install-docker-rootless.sh
+##COPY init-all.sh /var/jenkins_home/init-all.sh
+##ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/jenkins.sh"] >>> não utilizado
+##ENTRYPOINT ["/var/jenkins_home/init-all.sh"] >>> não utilizado
+#ENTRYPOINT ["/sbin/tini","--","/var/jenkins_home/init-all.sh"]
+
+##### Instalar o Vault #####
+RUN sudo mkdir -p /usr/src/vault
+RUN cd /usr/src/vault/
+RUN sudo wget https://releases.hashicorp.com/vault/1.6.3/vault_1.6.3_linux_amd64.zip
+RUN sudo unzip vault_1.6.3_linux_amd64.zip
+RUN sudo mv vault /usr/local/bin/
+##### Instalar JQ e envsubst ######
+RUN sudo yum install jq -y \
+    gettext
+# Add Tini
+RUN sudo yum makecache
+RUN sudo yum -y install tini
+ENTRYPOINT ["/usr/local/bin/jenkins-slave"]
+
+##### Iniciando Docker
+USER root
+RUN sudo echo jenkins:10000:65536 >> /etc/subuid
+RUN sudo echo jenkins:10000:65536 >> /etc/subgid
+USER jenkins
+ENV SKIP_IPTABLES=1
+ENV XDG_RUNTIME_DIR=/home/jenkins/.docker/run
+ENV PATH=/home/jenkins/bin:$PATH
+ENV DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS="-p 127.0.0.1:2376:2376/tcp"
+ENV DOCKER_HOST=tcp://127.0.0.1:2376
+RUN /tmp/install-docker-rootless.sh
+CMD /home/jenkins/bin/dockerd-rootless.sh  -H tcp://127.0.0.1:2376 &
+
+#ENTRYPOINT ["jenkins-slave","/sbin/tini","--","/var/jenkins_home/init-all.sh"]
+#ENTRYPOINT ["/usr/local/bin/jenkins-slave","/var/jenkins_home/init-all.sh"]
